@@ -1,0 +1,141 @@
+---
+title: "CFA_SimDesign"
+format: pdf
+editor: visual
+---
+
+```{r, warning=FALSE, message=FALSE}
+library(SimDesign)
+library(lavaan)
+library(tidyr)
+```
+
+
+# Step 1 --- Defining conditions (sample size and model)
+```{r}
+Design <- createDesign(sample_size = c(50, 100, 500, 1e3, 1e4, 1e5),
+                       model_type = c("true", "misspecified"))
+```
+
+
+# Step 2 --- Define generate, analyse, and summarise functions
+```{r}
+# Generate function: Simulate data based on the true model
+Generate <- function(condition, fixed_objects) {
+    N <- condition$sample_size
+    
+    # True model: Two factors, 8 indicators each
+    true_model <- '
+        f1 =~ 0.7*y1 + 
+        0.7*y2 + 
+        0.7*y3 + 
+        0.7*y4 + 
+        0.7*y5 + 
+        0.7*y6 + 
+        0.7*y7 + 
+        0.7*y8
+        
+        f2 =~ 0.7*y9 + 
+        0.7*y10 + 
+        0.7*y11 + 
+        0.7*y12 + 
+        0.7*y13 + 
+        0.7*y14 + 
+        0.7*y15 + 
+        0.7*y16
+    '
+  
+    
+    # Misspecification: Add cross-loadings
+    misspecified_model <- '
+        f1 =~ 0.7*y1 + 
+        0.7*y2 + 
+        0.7*y3 + 
+        0.7*y4 +
+        0.7*y5 + 
+        0.7*y6 + 
+        0.7*y7 + 
+        0.7*y8 + 
+        0.3*y9 # added cross-loading
+        
+        f2 =~ 0.7*y9 + 
+        0.7*y10 + 
+        0.7*y11 + 
+        0.7*y12 + 
+        0.7*y13 + 
+        0.7*y14 + 
+        0.7*y15 + 
+        0.7*y16 + 
+        0.3*y1 # added cross-loading
+    '
+    
+    # Generate data based on the condition
+    if(condition$model_type == "true") {
+        data <- simulateData(true_model, sample.nobs = N)
+    } else {
+        data <- simulateData(misspecified_model, sample.nobs = N)
+    }
+    
+    return(data)
+}
+
+
+# Analyse function: Fit the true model and extract fit measures
+Analyse <- function(condition, dat, fixed_objects) {
+    true_model <- '
+        f1 =~ y1 + y2 + y3 + y4 + y5 + y6 + y7 + y8
+        f2 =~ y9 + y10 + y11 + y12 + y13 + y14 + y15 + y16
+    '
+    
+    fit <- cfa(true_model, data = dat)
+    
+    # Extract fit measures
+    fit_measures <- fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr", "chisq"))
+    return(fit_measures)
+}
+
+
+# Summarise function: Calculate the average fit measures from n replications
+Summarise <- function(condition, results, fixed_objects) {
+    summary_measures <- colMeans(results)
+    return(summary_measures)
+}
+
+```
+
+```{r}
+# Make sure it doesn't try resuming a simulation
+SimClean()
+
+# Step 3 --- Collect results by looping over the rows in design
+library(SimDesign)
+library(lavaan)
+
+res <- runSimulation(design=Design, replications=100,
+                     generate=Generate, analyse=Analyse, summarise=Summarise)
+
+res <- res %>% dplyr::select(-COMPLETED, -SEED)
+
+# ----------------------------------------------------
+# ----------------------------------------------------
+print(res)
+
+```
+
+
+```{r}
+true_model <- '
+    f1 =~ y1 + y2 + y3 + y4 + y5 + y6 + y7 + y8
+    f2 =~ y9 + y10 + y11 + y12 + y13 + y14 + y15 + y16
+'
+
+simulated_data <- simulateData(true_model, sample.nobs = 1000)
+
+fit <- cfa(true_model, data = simulated_data)
+
+summary(fit, fit.measures = TRUE)
+```
+
+
+
+
