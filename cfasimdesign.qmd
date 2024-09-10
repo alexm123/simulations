@@ -5,20 +5,24 @@ editor: visual
 ---
 
 ```{r, warning=FALSE, message=FALSE}
-library(SimDesign)
+library(ggplot2)
 library(lavaan)
+library(parallel)
+library(SimDesign)
 library(tidyr)
 ```
 
+## Step 1 --- Defining conditions (sample size and model)
 
-# Step 1 --- Defining conditions (sample size and model)
 ```{r}
-Design <- createDesign(sample_size = c(50, 100, 500, 1e3, 1e4, 1e5),
-                       model_type = c("true", "misspecified"))
+Design <- createDesign(sample_size = c(100, 200, 400, 800, 1200),
+                       model_type = c("true", "misspecified"),
+                       data_type = c("normal", "non-normal"))
 ```
 
 
-# Step 2 --- Define generate, analyse, and summarise functions
+## Step 2 --- Define generate, analyse, and summarize functions
+
 ```{r}
 # Generate function: Simulate data based on the true model
 Generate <- function(condition, fixed_objects) {
@@ -70,11 +74,13 @@ Generate <- function(condition, fixed_objects) {
     '
     
     # Generate data based on the condition
-    if(condition$model_type == "true") {
-        data <- simulateData(true_model, sample.nobs = N)
-    } else {
-        data <- simulateData(misspecified_model, sample.nobs = N)
-    }
+  model_to_use <- ifelse(condition$model_type == "true", true_model, misspecified_model)
+  
+  if (condition$data_type == "normal") {
+    data <- lavaan::simulateData(model_to_use, sample.nobs = N)
+  } else {
+    data <- lavaan::simulateData(model_to_use, sample.nobs = N, skewness = 5, kurtosis = 21)
+  }
     
     return(data)
 }
@@ -87,10 +93,10 @@ Analyse <- function(condition, dat, fixed_objects) {
         f2 =~ y9 + y10 + y11 + y12 + y13 + y14 + y15 + y16
     '
     
-    fit <- cfa(true_model, data = dat)
+    fit <- lavaan::cfa(true_model, data = dat, estimator = "ML")
     
     # Extract fit measures
-    fit_measures <- fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr", "chisq"))
+    fit_measures <- lavaan::fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr", "chisq", "df"))
     return(fit_measures)
 }
 
@@ -103,37 +109,125 @@ Summarise <- function(condition, results, fixed_objects) {
 
 ```
 
+## Step 3 Collect results by looping over the rows in design
+
 ```{r}
 # Make sure it doesn't try resuming a simulation
 SimClean()
 
-# Step 3 --- Collect results by looping over the rows in design
-library(SimDesign)
-library(lavaan)
 
-res <- runSimulation(design=Design, replications=100,
-                     generate=Generate, analyse=Analyse, summarise=Summarise)
+res <- SimDesign::runSimulation(design=Design, replications=1000,
+                     generate=Generate, analyse=Analyse, summarise=Summarise,
+                     parallel = TRUE)
 
-res <- res %>% dplyr::select(-COMPLETED, -SEED)
+res <- res %>% dplyr::select(-COMPLETED, -SEED, -REPLICATIONS, RAM_USED)
 
 # ----------------------------------------------------
 # ----------------------------------------------------
-print(res)
+print(res, n = 100)
 
 ```
 
-
 ```{r}
 true_model <- '
-    f1 =~ y1 + y2 + y3 + y4 + y5 + y6 + y7 + y8
-    f2 =~ y9 + y10 + y11 + y12 + y13 + y14 + y15 + y16
-'
+        f1 =~ 0.7*y1 + 
+        0.7*y2 + 
+        0.7*y3 + 
+        0.7*y4 + 
+        0.7*y5 + 
+        0.7*y6 + 
+        0.7*y7 + 
+        0.7*y8
+        
+        f2 =~ 0.7*y9 + 
+        0.7*y10 + 
+        0.7*y11 + 
+        0.7*y12 + 
+        0.7*y13 + 
+        0.7*y14 + 
+        0.7*y15 + 
+        0.7*y16
+    ' 
 
-simulated_data <- simulateData(true_model, sample.nobs = 1000)
-
-fit <- cfa(true_model, data = simulated_data)
+system.time({
+  simulated_true_data <- simulateData(true_model, sample.nobs = 1e6, skewness = 0, kurtosis = 0)
+  
+  fit <- lavaan::cfa(true_model, data = simulated_true_data)
+})
 
 summary(fit, fit.measures = TRUE)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+res_long <- res %>%
+    pivot_longer(cols = starts_with("cfi") | starts_with("tli") | starts_with("rmsea") | starts_with("srmr") | starts_with("chisq"),
+                 names_to = "fit_measure",
+                 values_to = "value") %>%
+    separate(fit_measure, into = c("measure", "type"), sep = "_") %>%
+    mutate(type = factor(model_type, levels = c("true", "misspecified")),
+           data_type = factor(data_type, levels = c("normal", "non-normal")),
+           measure = factor(measure, levels = c("cfi", "tli", "rmsea", "srmr", "chisq")))
+
+# Plotting it
+plot_fit_measures <- function(measure_name) {
+    p <- ggplot(res_long %>% filter(measure == measure_name), aes(x = sample_size, y = value, color = data_type, linetype = type)) +
+        geom_line() +
+        geom_point() +
+        labs(title = paste(measure_name, "Fit Measure"),
+             x = "Sample Size",
+             y = measure_name,
+             color = "Data Type",
+             linetype = "Model Type") +
+        scale_color_manual(values = c("normal" = "blue", "non-normal" = "red")) + 
+        theme_minimal()
+    
+    print(p)
+}
+
+# Generate plots for each fit measure
+fit_measures <- unique(res_long$measure)
+for (measure in fit_measures) {
+    plot_fit_measures(measure)
+}
+       
+```
+
+## Normal!
+```{r}
+
+normal_simulated_data <- simulateData(
+  true_model, sample.nobs = 1e6, skewness = 0, kurtosis = 0
+  )
+good_var <- normal_simulated_data$y1
+
+ggplot(normal_simulated_data, aes(x = y1)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black") +
+  stat_function(fun = dnorm, args = list(mean = mean(good_var), sd = sd(good_var)), color = "red", size = 1) +
+  labs(title = "Normal Curve", x = "y1", y = "Density") +
+  theme_minimal()
+
+```
+
+## Non-normal...
+
+```{r}
+
+non_normal_simulated_data <- simulateData(
+  true_model, sample.nobs = 1e6, skewness = 2, kurtosis = 6
+  )
+
+bad_var <- non_normal_simulated_data$y1
+
+ggplot(non_normal_simulated_data, aes(x = y1)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black") +
+  stat_function(fun = dnorm, args = list(mean = mean(bad_var), sd = sd(bad_var)), color = "red", size = 1) +
+  labs(title = "Non-Normal Curve", x = "y1", y = "Density") +
+  theme_minimal()
+
 ```
 
 
